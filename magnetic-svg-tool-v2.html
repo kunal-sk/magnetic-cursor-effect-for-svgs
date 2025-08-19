@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Magnetic SVG Tool</title>
+<style>
+  :root { --w:635px; --h:656px; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background:#0b0b0c; color:#e9eaee; }
+  header { padding:14px 16px; display:flex; gap:12px; align-items:center; border-bottom:1px solid #202227; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  .controls { display:flex; gap:10px; align-items:center; font-size:13px; flex-wrap:wrap; }
+  .controls input[type="file"] { display:none; }
+  .btn { padding:6px 10px; border:1px solid #2c2f36; border-radius:8px; background:#15171b; color:#e9eaee; cursor:pointer; }
+  .btn:hover { border-color:#3a3f48; }
+  .num { width:80px; padding:6px 8px; border:1px solid #2c2f36; border-radius:8px; background:#0f1115; color:#e9eaee; }
+  label { color:#b7bcc7; }
+  .grid { display:grid; place-items:center; min-height:calc(100vh - 56px); padding:16px; }
+  .drop { width:var(--w); height:var(--h); border:1px dashed #2c2f36; border-radius:12px; display:grid; place-items:center; position:relative; background:#0f1115; }
+  .drop.drag { outline: 2px solid #3a3f48; }
+  .frame { width:100%; height:100%; position:relative; overflow:hidden; touch-action:none; }
+  .mount { width:100%; height:100%; display:grid; place-items:center; }
+  .mount svg { width:100%; height:100%; display:block; }
+  .hint { position:absolute; inset:0; display:grid; place-items:center; color:#b7bcc7; font-size:13px; text-align:center; padding:12px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Magnetic SVG Tool</h1>
+  <div class="controls">
+    <label class="btn" for="file">Upload SVG</label>
+    <input id="file" type="file" accept=".svg,image/svg+xml">
+    <button id="clear" class="btn">Clear</button>
+    <label for="radius">Radius (px)</label>
+    <input id="radius" class="num" type="number" min="0" step="1" value="10">
+  </div>
+</header>
+
+<div class="grid">
+  <div id="drop" class="drop" aria-label="Drop an SVG or use Upload">
+    <div class="frame" id="frame">
+      <div class="mount" id="mount">
+        <div class="hint" id="hint">Drop an SVG here or use Upload. Move the pointer inside the frame to see the magnetic effect.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function initMagnet(container, opts) {
+  const frame = container.querySelector('.frame');
+  const mount = container.querySelector('.mount');
+  const radiusInput = document.getElementById('radius');
+
+  function getRadius() {
+    const v = parseFloat(radiusInput && radiusInput.value);
+    return Number.isFinite(v) && v >= 0 ? v : 10;
+  }
+
+  function setup(svg) {
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+
+    const paths = Array.from(svg.querySelectorAll('path'));
+    const items = paths.map(p => {
+      const base = p.getAttribute('transform') || '';
+      const bb = p.getBBox();
+      return { el: p, cx: bb.x + bb.width/2, cy: bb.y + bb.height/2, base, angle: 0 };
+    });
+
+    // Utilities
+    const pt = svg.createSVGPoint();
+    const clientToSvg = (x, y) => {
+      pt.x = x; pt.y = y;
+      const m = svg.getScreenCTM();
+      return m ? pt.matrixTransform(m.inverse()) : { x, y };
+    };
+    const svgToClient = (x, y) => {
+      pt.x = x; pt.y = y;
+      const m = svg.getScreenCTM();
+      if (!m) return { x, y };
+      const r = pt.matrixTransform(m);
+      return { x: r.x, y: r.y };
+    };
+
+    // Pointer state uses client pixel origin from the cursor tip
+    const pointer = { clientX: 0, clientY: 0, x: 0, y: 0, active: false };
+    let rafId = null;
+
+    function onEnter() {
+      pointer.active = true;
+      if (!rafId) rafId = requestAnimationFrame(loop);
+    }
+    function onLeave() {
+      pointer.active = false;
+      // Immediate reset of all paths to original transforms
+      for (const it of items) {
+        it.angle = 0;
+        it.el.setAttribute('transform', it.base);
+      }
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    function onMove(e) {
+      pointer.clientX = e.clientX;
+      pointer.clientY = e.clientY;
+      const sp = clientToSvg(e.clientX, e.clientY);
+      pointer.x = sp.x;
+      pointer.y = sp.y;
+      if (!rafId && pointer.active) rafId = requestAnimationFrame(loop);
+    }
+
+    function loop() {
+      rafId = null;
+      if (!pointer.active) return;
+
+      // Tip origin in screen pixels
+      const cursorPx = { x: pointer.clientX, y: pointer.clientY };
+      const radiusPx = getRadius();
+
+      for (const it of items) {
+        const centerPx = svgToClient(it.cx, it.cy);
+        const dx = cursorPx.x - centerPx.x;
+        const dy = cursorPx.y - centerPx.y;
+        const dist = Math.hypot(dx, dy);
+
+        if (dist <= radiusPx) {
+          const angle = Math.atan2(pointer.y - it.cy, pointer.x - it.cx) * 180 / Math.PI;
+          it.angle = angle;
+          it.el.setAttribute('transform', it.base + ' rotate(' + it.angle + ' ' + it.cx + ' ' + it.cy + ')');
+        } else if (it.angle !== 0) {
+          // Immediate reset when outside radius
+          it.angle = 0;
+          it.el.setAttribute('transform', it.base);
+        }
+      }
+      rafId = requestAnimationFrame(loop);
+    }
+
+    frame.addEventListener('pointerenter', onEnter);
+    frame.addEventListener('pointerleave', onLeave);
+    frame.addEventListener('pointermove', onMove);
+
+    const onResize = () => {
+      for (const it of items) {
+        const bb = it.el.getBBox();
+        it.cx = bb.x + bb.width/2;
+        it.cy = bb.y + bb.height/2;
+      }
+    };
+    window.addEventListener('resize', onResize);
+
+    return () => {
+      frame.removeEventListener('pointerenter', onEnter);
+      frame.removeEventListener('pointerleave', onLeave);
+      frame.removeEventListener('pointermove', onMove);
+      window.removeEventListener('resize', onResize);
+    };
+  }
+
+  let cleanup = null;
+
+  return {
+    loadInline(svgString) {
+      if (cleanup) cleanup();
+      const hint = container.querySelector('.hint');
+      if (hint) hint.classList.add('hidden');
+      const tmp = document.createElement('div');
+      tmp.innerHTML = svgString.trim();
+      const svg = tmp.querySelector('svg');
+      if (!svg) { console.warn('No <svg> in provided content'); return; }
+      mount.innerHTML = '';
+      mount.appendChild(svg);
+      cleanup = setup(svg);
+    },
+    clear() {
+      const hint = container.querySelector('.hint');
+      if (hint) hint.classList.remove('hidden');
+      if (cleanup) cleanup();
+      mount.innerHTML = '';
+    }
+  };
+}
+
+(function(){
+  const drop = document.getElementById('drop');
+  const file = document.getElementById('file');
+  const clearBtn = document.getElementById('clear');
+
+  const tool = initMagnet(drop);
+
+  function handleFile(f) {
+    if (!f || (!/svg/i.test(f.type) && !f.name.endsWith('.svg'))) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      let txt = String(e.target.result);
+      if (txt.trim().startsWith('<?xml')) {
+        const idx = txt.indexOf('?>');
+        if (idx !== -1) txt = txt.slice(idx+2);
+      }
+      tool.loadInline(txt);
+    };
+    reader.readAsText(f);
+  }
+
+  file.addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    handleFile(f);
+    file.value = '';
+  });
+
+  ['dragenter','dragover'].forEach(ev => {
+    drop.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); drop.classList.add('drag'); });
+  });
+  ['dragleave','drop'].forEach(ev => {
+    drop.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); drop.classList.remove('drag'); });
+  });
+  drop.addEventListener('drop', e => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    handleFile(f);
+  });
+
+  clearBtn.addEventListener('click', () => tool.clear());
+})();
+</script>
+</body>
+</html>
